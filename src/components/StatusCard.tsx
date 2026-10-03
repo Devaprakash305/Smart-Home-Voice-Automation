@@ -23,7 +23,7 @@ export const StatusCard: React.FC<StatusCardProps> = ({
       icon: <Cpu className="w-5 h-5 text-cyan-400" />,
       online: status.online,
       statusText: status.esp8266,
-      colorClass: status.online ? 'text-emerald-400' : 'text-rose-400',
+      colorClass: status.online ? 'text-emerald-400' : status.esp8266 === 'Offline' ? 'text-rose-400' : 'text-amber-400',
     },
     {
       id: 'cloudflare',
@@ -67,6 +67,11 @@ export const StatusCard: React.FC<StatusCardProps> = ({
             <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 animate-pulse" />
               <span>🟢 Device Online</span>
+            </div>
+          ) : status.esp8266 === 'Device Status Unavailable' || status.esp8266 === 'Checking...' ? (
+            <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+              <XCircle className="w-4 h-4 text-amber-400" />
+              <span>{status.esp8266}</span>
             </div>
           ) : (
             <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/30">

@@ -22,19 +22,22 @@ async function fetchHardwareState(): Promise<{ bulb1: boolean; bulb2: boolean } 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(buildApiUrl('/device/state'), { signal: controller.signal });
-    clearTimeout(timeoutId);
+    let res: Response;
+    try {
+      res = await fetch(buildApiUrl('/device/state'), { signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     if (!res.ok) {
       return null;
     }
 
     const payload = await res.json();
-    if (payload && typeof payload === 'object') {
-      return {
-        bulb1: Boolean(payload.bulb1),
-        bulb2: Boolean(payload.bulb2),
-      };
+    const bulb1 = payload?.bulb1_state ?? payload?.bulb1;
+    const bulb2 = payload?.bulb2_state ?? payload?.bulb2;
+    if (typeof bulb1 === 'boolean' && typeof bulb2 === 'boolean') {
+      return { bulb1, bulb2 };
     }
 
     return null;
@@ -47,18 +50,10 @@ async function fetchHardwareState(): Promise<{ bulb1: boolean; bulb2: boolean } 
 // Cache for active session
 let localDeviceCache: Device | null = null;
 let localLogsCache: CommandLog[] = [];
-let localStateCache: DeviceState = {
-  id: '00000000-0000-4000-8000-000000000001',
-  device_id: '00000000-0000-4000-8000-000000000002',
-  bulb_state: false,
-  light_state: false,
-  updated_at: new Date().toISOString(),
-};
 
 /**
  * 1. REAL DEVICE STATUS & HEARTBEAT
- * Queries the Cloudflare Worker backend GET /device/status endpoint.
- * Evaluates heartbeat: ESP8266 is ONLINE if lastSeen is within 10 seconds.
+ * Uses the Worker-reported heartbeat status; API reachability is tracked separately.
  */
 export async function getDeviceStatus(): Promise<SystemStatus> {
   const isVoiceReady =
@@ -66,38 +61,38 @@ export async function getDeviceStatus(): Promise<SystemStatus> {
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
 
   let backendOk = false;
+  let statusAvailable = false;
   let esp8266Online = false;
   let lastSeenTime: string | null = null;
-  let bulbState = localStateCache.bulb_state;
-  let lightState = localStateCache.light_state;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    let res: Response;
+    try {
+      res = await fetch(buildApiUrl('/device/status'), { signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
-  const hardwareState = await fetchHardwareState();
-
-  if (hardwareState) {
-    backendOk = true;
-    bulbState = Boolean(hardwareState.bulb1);
-    lightState = Boolean(hardwareState.bulb2);
-    localStateCache = {
-      ...localStateCache,
-      bulb_state: bulbState,
-      light_state: lightState,
-      updated_at: new Date().toISOString(),
-    };
-
-    lastSeenTime = new Date().toISOString();
-    esp8266Online = true;
+    backendOk = res.ok;
+    if (res.ok) {
+      const data = await res.json();
+      statusAvailable = typeof data.online === 'boolean';
+      esp8266Online = statusAvailable && data.online === true;
+      lastSeenTime = data.last_seen ?? data.lastSeen ?? null;
+    }
+  } catch (error) {
+    console.warn('Cloudflare device status request failed:', error);
   }
 
   return {
     online: esp8266Online,
     lastSeen: lastSeenTime,
     device: 'ESP8266',
-    esp8266: esp8266Online ? 'Online' : 'Offline',
+    esp8266: statusAvailable ? (esp8266Online ? 'Online' : 'Offline') : 'Device Status Unavailable',
     cloudflare: backendOk ? 'Connected' : 'Error',
     supabase: isSupabaseConfigured ? 'Connected' : 'Error',
     voice: isVoiceReady ? 'Ready' : 'Unsupported',
-    bulbState,
-    lightState,
   };
 }
 
@@ -122,17 +117,7 @@ export async function getUserDevice(userId?: string): Promise<Device | null> {
   if (!authUserId) return localDeviceCache;
 
   if (!isSupabaseConfigured) {
-    if (!localDeviceCache) {
-      localDeviceCache = {
-        id: '00000000-0000-4000-8000-000000000002',
-        user_id: authUserId,
-        device_name: 'Smart Home ESP8266',
-        device_type: 'ESP8266',
-        thing_id: null,
-        created_at: new Date().toISOString(),
-      };
-    }
-    return localDeviceCache;
+    return null;
   }
 
   try {
@@ -164,216 +149,84 @@ export async function createDefaultDevice(userId: string): Promise<Device> {
 
 export async function initializeDevice(userId: string): Promise<Device> {
   const authUserId = (await getAuthenticatedUserId()) || userId;
-  if (!authUserId) throw new Error('Unauthenticated user cannot create device');
+  if (!authUserId || !isSupabaseConfigured) {
+    throw new Error('Supabase is not configured for device initialization.');
+  }
 
-  if (!isSupabaseConfigured) {
-    localDeviceCache = {
-      id: crypto.randomUUID(),
+  const { data: existing, error: lookupError } = await supabase
+    .from('devices')
+    .select('*')
+    .eq('user_id', authUserId)
+    .maybeSingle();
+
+  if (lookupError) throw lookupError;
+  if (existing) {
+    localDeviceCache = existing;
+    return existing;
+  }
+
+  const { data, error } = await supabase
+    .from('devices')
+    .insert([{
       user_id: authUserId,
       device_name: 'Smart Home ESP8266',
       device_type: 'ESP8266',
       thing_id: null,
-      created_at: new Date().toISOString(),
-    };
-    return localDeviceCache;
-  }
+    }])
+    .select()
+    .maybeSingle();
 
-  try {
-    const { data: existing } = await supabase
-      .from('devices')
-      .select('*')
-      .eq('user_id', authUserId)
-      .maybeSingle();
-
-    if (existing) {
-      localDeviceCache = existing;
-      return existing;
-    }
-
-    const newDevicePayload = {
-      user_id: authUserId,
-      device_name: 'Smart Home ESP8266',
-      device_type: 'ESP8266',
-      thing_id: null,
-    };
-
-    const { data, error } = await supabase
-      .from('devices')
-      .insert([newDevicePayload])
-      .select()
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase device insertion error:', error.message || error);
-      const { data: retry } = await supabase
-        .from('devices')
-        .select('*')
-        .eq('user_id', authUserId)
-        .maybeSingle();
-
-      if (retry) {
-        localDeviceCache = retry;
-        return retry;
-      }
-    }
-
-    if (data) {
-      localDeviceCache = data;
-      await initializeDeviceState(data.id);
-      return data;
-    }
-  } catch (err) {
-    console.error('Device initialization exception:', err);
-  }
-
-  if (!localDeviceCache) {
-    localDeviceCache = {
-      id: crypto.randomUUID(),
-      user_id: authUserId,
-      device_name: 'Smart Home ESP8266',
-      device_type: 'ESP8266',
-      thing_id: null,
-      created_at: new Date().toISOString(),
-    };
-  }
-  return localDeviceCache;
+  if (error) throw error;
+  if (!data) throw new Error('Supabase did not return the created device.');
+  localDeviceCache = data;
+  return data;
 }
 
-/**
- * 3. REAL DEVICE STATE FROM SUPABASE & BACKEND
- */
-export async function getDeviceState(deviceId: string): Promise<DeviceState> {
+export async function getDeviceState(deviceId?: string): Promise<DeviceState | null> {
   const hardwareState = await fetchHardwareState();
+  if (!hardwareState) return null;
 
-  if (hardwareState) {
-    const normalizedState: DeviceState = {
-      id: deviceId || localStateCache.id,
-      device_id: deviceId || localStateCache.device_id,
-      bulb_state: Boolean(hardwareState.bulb1),
-      light_state: Boolean(hardwareState.bulb2),
-      updated_at: new Date().toISOString(),
-    };
-
-    localStateCache = normalizedState;
-    return normalizedState;
-  }
-
-  if (!deviceId) return localStateCache;
-
-  if (!isSupabaseConfigured) {
-    return localStateCache;
-  }
-
-  try {
-    const { data, error } = await supabase
-      .from('device_states')
-      .select('*')
-      .eq('device_id', deviceId)
-      .maybeSingle();
-
-    if (error) {
-      console.warn('Supabase getDeviceState warning:', error.message || error);
-    }
-
-    if (data) {
-      const normalizedState: DeviceState = {
-        id: data.id,
-        device_id: data.device_id,
-        bulb_state: data.bulb_state !== undefined ? Boolean(data.bulb_state) : Boolean(data.bulb1_state),
-        light_state: data.light_state !== undefined ? Boolean(data.light_state) : Boolean(data.bulb2_state),
-        updated_at: data.updated_at || new Date().toISOString(),
-      };
-      localStateCache = normalizedState;
-      return normalizedState;
-    }
-
-    return await initializeDeviceState(deviceId);
-  } catch (err) {
-    console.error('Error fetching device state:', err);
-    return localStateCache;
-  }
-}
-
-export async function initializeDeviceState(deviceId: string): Promise<DeviceState> {
-  if (!isSupabaseConfigured || !deviceId) return localStateCache;
-
-  try {
-    const { data: existing } = await supabase
-      .from('device_states')
-      .select('*')
-      .eq('device_id', deviceId)
-      .maybeSingle();
-
-    if (existing) {
-      const normalizedState: DeviceState = {
-        id: existing.id,
-        device_id: existing.device_id,
-        bulb_state: existing.bulb_state !== undefined ? Boolean(existing.bulb_state) : Boolean(existing.bulb1_state),
-        light_state: existing.light_state !== undefined ? Boolean(existing.light_state) : Boolean(existing.bulb2_state),
-        updated_at: existing.updated_at || new Date().toISOString(),
-      };
-      localStateCache = normalizedState;
-      return normalizedState;
-    }
-
-    const newStatePayload = {
-      device_id: deviceId,
-      bulb1_state: false,
-      bulb2_state: false,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data, error } = await supabase
-      .from('device_states')
-      .insert([newStatePayload])
-      .select()
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase initializeDeviceState error:', error.message || error);
-    }
-
-    if (data) {
-      const normalizedState: DeviceState = {
-        id: data.id,
-        device_id: data.device_id,
-        bulb_state: false,
-        light_state: false,
-        updated_at: data.updated_at || new Date().toISOString(),
-      };
-      localStateCache = normalizedState;
-      return normalizedState;
-    }
-  } catch (err) {
-    console.error('Device state initialization exception:', err);
-  }
-
-  return localStateCache;
+  const stateDeviceId = deviceId || 'esp8266';
+  return {
+    id: stateDeviceId,
+    device_id: stateDeviceId,
+    bulb_state: hardwareState.bulb1,
+    light_state: hardwareState.bulb2,
+    updated_at: new Date().toISOString(),
+  };
 }
 
 /**
  * 4. REAL HARDWARE CONTROL SERVICE
  * Sends command POST /device/control to Cloudflare Worker.
- * Updates Supabase device_states and inserts row in commands table.
+ * Persists Supabase state and command history only when an assigned device ID is provided.
  */
 export async function controlBulb(
   userId: string,
-  deviceId: string,
+  deviceId: string | null,
   targetDevice: TargetDevice,
   action: TargetAction,
   commandText?: string
 ): Promise<ControlBulbResult> {
   const authUserId = (await getAuthenticatedUserId()) || userId;
-  let targetDeviceId = deviceId;
-
-  if (!targetDeviceId || targetDeviceId === '00000000-0000-4000-8000-000000000002') {
-    const userDev = await getUserDevice(authUserId);
-    if (userDev) {
-      targetDeviceId = userDev.id;
-    }
+  const liveStatus = await getDeviceStatus();
+  if (liveStatus.esp8266 === 'Device Status Unavailable') {
+    return { success: false, message: 'Device Status Unavailable' };
+  }
+  if (!liveStatus.online) {
+    return {
+      success: false,
+      message: 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.',
+    };
   }
 
-  const currentState = await getDeviceState(targetDeviceId);
+  const targetDeviceId = deviceId || '';
+
+  const currentState = await getDeviceState(targetDeviceId || undefined);
+  if (!currentState) {
+    return { success: false, message: 'Unable to read the current hardware state.' };
+  }
+
   let newB = currentState.bulb_state;
   let newL = currentState.light_state;
 
@@ -399,6 +252,7 @@ export async function controlBulb(
     }
   }
 
+  let apiMessage = '';
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -416,40 +270,46 @@ export async function controlBulb(
       throw new Error(`Backend responded with status ${res.status}`);
     }
 
-    const refreshedState = await fetchHardwareState();
-    if (refreshedState) {
-      newB = Boolean(refreshedState.bulb1);
-      newL = Boolean(refreshedState.bulb2);
+    const responseText = await res.text();
+    if (responseText) {
+      let responseData: Record<string, unknown>;
+      try {
+        responseData = JSON.parse(responseText);
+      } catch {
+        throw new Error('Worker did not return a command acknowledgement.');
+      }
+      if (responseData.success === false || responseData.ok === false || responseData.error) {
+        throw new Error(String(responseData.error || responseData.message || 'Worker rejected the command.'));
+      }
+      apiMessage = typeof responseData.message === 'string' ? responseData.message : '';
     }
 
-    localStateCache = {
-      ...currentState,
-      bulb_state: newB,
-      light_state: newL,
-      updated_at: new Date().toISOString(),
-    };
+    const refreshedState = await fetchHardwareState();
+    if (!refreshedState) {
+      return { success: false, message: 'Unable to refresh the real device state.' };
+    }
+    newB = refreshedState.bulb1;
+    newL = refreshedState.bulb2;
 
     if (isSupabaseConfigured && targetDeviceId) {
       try {
-        const { error: stateErr } = await supabase
+        const { data: updatedState, error: stateErr } = await supabase
           .from('device_states')
           .update({
             bulb1_state: newB,
             bulb2_state: newL,
-            bulb_state: newB,
-            light_state: newL,
             updated_at: new Date().toISOString(),
           })
-          .eq('device_id', targetDeviceId);
+          .eq('device_id', targetDeviceId)
+          .select('device_id')
+          .maybeSingle();
 
-        if (stateErr) {
+        if (stateErr || !updatedState) {
           await supabase.from('device_states').upsert(
             {
               device_id: targetDeviceId,
               bulb1_state: newB,
               bulb2_state: newL,
-              bulb_state: newB,
-              light_state: newL,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'device_id' }
@@ -460,13 +320,13 @@ export async function controlBulb(
       }
     }
 
-    if (action !== 'status') {
+    if (action !== 'status' && targetDeviceId) {
       await saveCommand(authUserId, targetDeviceId, displayCommand, targetDevice, action, 'success');
     }
 
     return {
       success: true,
-      message: 'Hardware command executed.',
+      message: apiMessage || 'Hardware command acknowledged.',
       newState: {
         bulb_state: newB,
         light_state: newL,
@@ -607,45 +467,4 @@ export async function getCommandHistory(userId?: string): Promise<CommandLog[]> 
   }
 
   return localLogsCache;
-}
-
-/**
- * Realtime listener subscription for device_states table changes.
- */
-export function subscribeToDeviceState(
-  deviceId: string,
-  onStateChange: (newState: DeviceState) => void
-) {
-  if (!isSupabaseConfigured || !deviceId) return () => {};
-
-  const channel = supabase
-    .channel(`device_state_${deviceId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'device_states',
-        filter: `device_id=eq.${deviceId}`,
-      },
-      (payload) => {
-        if (payload.new) {
-          const data = payload.new as any;
-          const normalizedState: DeviceState = {
-            id: data.id,
-            device_id: data.device_id,
-            bulb_state: data.bulb_state !== undefined ? Boolean(data.bulb_state) : Boolean(data.bulb1_state),
-            light_state: data.light_state !== undefined ? Boolean(data.light_state) : Boolean(data.bulb2_state),
-            updated_at: data.updated_at || new Date().toISOString(),
-          };
-          localStateCache = normalizedState;
-          onStateChange(normalizedState);
-        }
-      }
-    )
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(channel);
-  };
 }

@@ -6,10 +6,10 @@ import { useTheme } from '../contexts/ThemeContext';
 interface NavbarProps {
   currentTab: string;
   onSelectTab: (tab: string) => void;
-  isOnline?: boolean;
+  deviceStatus: 'Online' | 'Offline' | 'Device Status Unavailable' | 'Checking...';
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, isOnline = false }) => {
+export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, deviceStatus }) => {
   const { profile, signOut } = useAuth();
   const { theme, toggleTheme } = useTheme();
 
@@ -22,6 +22,13 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, isOnlin
       .toUpperCase()
       .slice(0, 2);
   };
+
+  const isOnline = deviceStatus === 'Online';
+  const statusClass = isOnline
+    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+    : deviceStatus === 'Device Status Unavailable' || deviceStatus === 'Checking...'
+      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20'
+      : 'bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20';
 
   return (
     <header className="sticky top-0 z-40 w-full glass-panel border-b border-slate-800/60 transition-colors">
@@ -93,16 +100,16 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, isOnlin
           {/* Hardware Connection Indicator */}
           <div
             onClick={() => onSelectTab('status')}
-            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer transition-all ${
-              isOnline
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
-                : 'bg-rose-500/10 text-rose-400 border-rose-500/30 hover:bg-rose-500/20'
-            }`}
-            title={isOnline ? 'ESP8266 Online' : 'ESP8266 Offline'}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium border cursor-pointer transition-all ${statusClass}`}
+            title={`ESP8266 ${deviceStatus}`}
           >
             <Wifi className={`w-3.5 h-3.5 ${isOnline ? 'animate-pulse text-emerald-400' : 'text-rose-400'}`} />
             <span className="hidden sm:inline font-semibold">
-              {isOnline ? '🟢 Device Online' : '🔴 Device Offline'}
+              {deviceStatus === 'Online'
+                ? '🟢 Device Online'
+                : deviceStatus === 'Offline'
+                  ? '🔴 Device Offline'
+                  : deviceStatus}
             </span>
           </div>
 

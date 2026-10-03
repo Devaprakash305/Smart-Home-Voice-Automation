@@ -21,7 +21,7 @@ const MainLayout: React.FC = () => {
   const location = useLocation();
 
   const [toast, setToast] = useState<ToastMessage | null>(null);
-  const [isDeviceOnline, setIsDeviceOnline] = useState<boolean>(false);
+  const [deviceStatusLabel, setDeviceStatusLabel] = useState<'Online' | 'Offline' | 'Device Status Unavailable' | 'Checking...'>('Checking...');
 
   useEffect(() => {
     let isMounted = true;
@@ -30,17 +30,17 @@ const MainLayout: React.FC = () => {
       try {
         const status = await getDeviceStatus();
         if (isMounted) {
-          setIsDeviceOnline(Boolean(status.online));
+          setDeviceStatusLabel(status.esp8266);
         }
       } catch {
         if (isMounted) {
-          setIsDeviceOnline(false);
+          setDeviceStatusLabel('Device Status Unavailable');
         }
       }
     };
 
     refreshDeviceStatus();
-    const intervalId = window.setInterval(refreshDeviceStatus, 4000);
+    const intervalId = window.setInterval(refreshDeviceStatus, 5000);
 
     return () => {
       isMounted = false;
@@ -100,7 +100,7 @@ const MainLayout: React.FC = () => {
       <Navbar
         currentTab={currentTab}
         onSelectTab={handleSelectTab}
-        isOnline={isDeviceOnline}
+        deviceStatus={deviceStatusLabel}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6">

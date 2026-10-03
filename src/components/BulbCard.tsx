@@ -6,9 +6,10 @@ interface BulbCardProps {
   bulbId: 'bulb' | 'light';
   title: string;
   subtitle: string;
-  isOn: boolean;
+  isOn?: boolean;
   onToggle: (bulbId: 'bulb' | 'light', targetState: boolean) => void;
   isLoading?: boolean;
+  controlsEnabled?: boolean;
   lastUpdated?: string;
   accentColor?: 'amber' | 'cyan';
 }
@@ -20,6 +21,7 @@ export const BulbCard: React.FC<BulbCardProps> = ({
   isOn,
   onToggle,
   isLoading = false,
+  controlsEnabled = true,
   lastUpdated,
   accentColor = 'amber',
 }) => {
@@ -72,7 +74,7 @@ export const BulbCard: React.FC<BulbCardProps> = ({
               <span
                 className={`text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${badgeClass}`}
               >
-                {isOn ? 'ON' : 'OFF'}
+                {isOn === undefined ? 'Checking...' : isOn ? 'ON' : 'OFF'}
               </span>
             </div>
             <p className="text-xs text-slate-400 font-medium mt-0.5">{subtitle}</p>
@@ -81,12 +83,12 @@ export const BulbCard: React.FC<BulbCardProps> = ({
 
         {/* Interactive Toggle Switch */}
         <button
-          onClick={() => !isLoading && onToggle(bulbId, !isOn)}
-          disabled={isLoading}
+          onClick={() => !isLoading && controlsEnabled && onToggle(bulbId, !isOn)}
+          disabled={isLoading || !controlsEnabled}
           aria-label={`Toggle ${title}`}
           aria-checked={isOn}
           role="switch"
-          className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-slate-900 ${
+          className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:cursor-not-allowed disabled:opacity-50 ${
             isOn
               ? isAmber
                 ? 'bg-amber-500'
@@ -112,9 +114,9 @@ export const BulbCard: React.FC<BulbCardProps> = ({
         </div>
 
         <button
-          onClick={() => !isLoading && onToggle(bulbId, !isOn)}
-          disabled={isLoading}
-          className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-all shadow-md active:scale-95 ${
+          onClick={() => !isLoading && controlsEnabled && onToggle(bulbId, !isOn)}
+          disabled={isLoading || !controlsEnabled}
+          className={`px-4 py-2 rounded-xl text-xs font-semibold flex items-center space-x-2 transition-all shadow-md active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
             isOn
               ? 'bg-slate-800/80 text-rose-300 hover:bg-rose-500/20 border border-rose-500/30'
               : isAmber

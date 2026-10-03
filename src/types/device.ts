@@ -26,12 +26,10 @@ export interface SystemStatus {
   online: boolean;
   lastSeen: string | null;
   device: string;
-  esp8266: 'Online' | 'Offline' | 'Checking...';
+  esp8266: 'Online' | 'Offline' | 'Device Status Unavailable' | 'Checking...';
   cloudflare: 'Connected' | 'Error' | 'Checking...';
   supabase: 'Connected' | 'Error';
   voice: 'Ready' | 'Unsupported';
-  bulbState: boolean;
-  lightState: boolean;
   internet?: boolean;
   backend?: 'Connected' | 'Error';
 }

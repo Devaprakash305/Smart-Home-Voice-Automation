@@ -8,30 +8,40 @@ import type { VoiceCommand } from '../types/command';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface VoiceControlProps {
-  onCommandParsed: (command: VoiceCommand) => void;
+  onCommandParsed: (command: VoiceCommand) => Promise<string | void> | string | void;
   currentState?: { bulb_state: boolean; light_state: boolean };
   isExecuting?: boolean;
+  deviceStatus: 'Online' | 'Offline' | 'Device Status Unavailable' | 'Checking...';
 }
 
 export const VoiceControl: React.FC<VoiceControlProps> = ({
   onCommandParsed,
   currentState,
   isExecuting = false,
+  deviceStatus,
 }) => {
   const { voiceResponseEnabled } = useTheme();
   const [lastExecutedResponse, setLastExecutedResponse] = useState<string | null>(null);
 
-  const handleSpeechResult = (spokenTranscript: string) => {
+  const handleSpeechResult = async (spokenTranscript: string) => {
     if (!spokenTranscript.trim()) return;
 
     const parsed = parseVoiceCommand(spokenTranscript);
 
     if (parsed) {
-      // Execute command
-      onCommandParsed(parsed);
+      if (parsed.action !== 'status' && deviceStatus !== 'Online') {
+        const message = deviceStatus === 'Device Status Unavailable'
+          ? 'Device Status Unavailable'
+          : 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.';
+        setLastExecutedResponse(message);
+        speakResponse(message, voiceResponseEnabled);
+        return;
+      }
 
-      // Generate spoken feedback
-      const feedbackText = getVoiceFeedbackText(parsed.device, parsed.action, currentState);
+      const commandResult = await onCommandParsed(parsed);
+      const feedbackText = typeof commandResult === 'string'
+        ? commandResult
+        : getVoiceFeedbackText(parsed.device, parsed.action, currentState, deviceStatus === 'Online');
       setLastExecutedResponse(feedbackText);
       speakResponse(feedbackText, voiceResponseEnabled);
     } else {
@@ -210,8 +220,12 @@ export const VoiceControl: React.FC<VoiceControlProps> = ({
               <button
                 key={cmd}
                 onClick={() => handlePresetCommand(cmd)}
-                disabled={isExecuting || status === 'listening'}
-                className="px-3 py-1.5 rounded-full bg-slate-800/70 hover:bg-slate-700/80 text-slate-300 hover:text-cyan-300 border border-slate-700/60 text-xs font-medium transition-all active:scale-95"
+                disabled={
+                  isExecuting ||
+                  status === 'listening' ||
+                  (deviceStatus !== 'Online' && cmd !== 'What is the status?')
+                }
+                className="px-3 py-1.5 rounded-full bg-slate-800/70 hover:bg-slate-700/80 text-slate-300 hover:text-cyan-300 border border-slate-700/60 text-xs font-medium transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 "{cmd}"
               </button>

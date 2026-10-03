@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Power, Cloud, Cpu, Sparkles, RefreshCw, AlertCircle } from 'lucide-react';
+import { Power, Cloud, Cpu, Sparkles, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { BulbCard } from '../components/BulbCard';
 import { VoiceControl } from '../components/VoiceControl';
+import { getVoiceFeedbackText } from '../services/voiceService';
 import type { ToastMessage } from '../components/Toast';
 import {
-  getUserDevice,
-  createDefaultDevice,
   getDeviceState,
   controlBulb,
   getDeviceStatus,
-  subscribeToDeviceState,
 } from '../services/deviceService';
-import type { Device, DeviceState, VoiceCommand, SystemStatus } from '../types';
+import type { DeviceState, VoiceCommand, SystemStatus } from '../types';
 
 interface DashboardPageProps {
   onShowToast: (toast: ToastMessage) => void;
@@ -22,7 +20,6 @@ interface DashboardPageProps {
 export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => {
   const { profile, user } = useAuth();
 
-  const [device, setDevice] = useState<Device | null>(null);
   const [deviceState, setDeviceState] = useState<DeviceState | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<SystemStatus>({
     online: false,
@@ -32,14 +29,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
     cloudflare: 'Checking...',
     supabase: 'Connected',
     voice: 'Ready',
-    bulbState: false,
-    lightState: false,
   });
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isOperating, setIsOperating] = useState<boolean>(false);
-  const [noDeviceError, setNoDeviceError] = useState<boolean>(false);
-
   // Time based greeting
   const getGreeting = () => {
     const hour = new Date().getHours();
@@ -48,116 +41,63 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
     return 'Good Evening';
   };
 
-  // Poll real backend status every 3-5 seconds
+  // Poll the authoritative heartbeat and the live relay states every five seconds.
   const fetchStatus = useCallback(async () => {
-    const status = await getDeviceStatus();
+    const [status, liveState] = await Promise.all([
+      getDeviceStatus(),
+      getDeviceState(),
+    ]);
     setDeviceStatus(status);
+    setDeviceState(liveState);
+    setIsLoading(false);
   }, []);
 
-  // Synchronize initial system health & device state from Supabase / Backend
+  // Device presence comes from the hardware heartbeat, not a Supabase assignment.
   const loadDeviceData = useCallback(async () => {
-    if (!user) return;
     setIsLoading(true);
+    await fetchStatus();
+  }, [fetchStatus]);
 
-    let userDev = await getUserDevice(user.id);
-
-    if (!userDev) {
-      setNoDeviceError(true);
-      setIsLoading(false);
-      return;
-    }
-
-    setNoDeviceError(false);
-    setDevice(userDev);
-
-    const [states, status] = await Promise.all([
-      getDeviceState(userDev.id),
-      getDeviceStatus(),
-    ]);
-
-    setDeviceState(states);
-    setDeviceStatus(status);
-    setIsLoading(false);
-  }, [user]);
-
+  // Keep the dashboard synchronized with the real hardware every five seconds.
   useEffect(() => {
-    loadDeviceData();
-  }, [loadDeviceData]);
-
-  // Periodic heartbeat polling every 4 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchStatus();
-    }, 4000);
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000);
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  // Subscribe to Supabase Realtime changes for device_states
-  useEffect(() => {
-    if (!device?.id) return;
-    const unsubscribe = subscribeToDeviceState(device.id, (newState) => {
-      setDeviceState(newState);
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [device?.id]);
-
-  // Handle manual setup trigger if no device exists
-  const handleProvisionDevice = async () => {
+  // Toggle single device (bulb or light)
+  const handleToggleDevice = async (bulbId: 'bulb' | 'light', targetState: boolean) => {
     if (!user) return;
-    setIsLoading(true);
-    try {
-      const newDev = await createDefaultDevice(user.id);
-      setDevice(newDev);
-      setNoDeviceError(false);
-      onShowToast({
-        id: `toast-${Date.now()}`,
-        type: 'success',
-        title: 'Device Connected!',
-        description: 'Smart Home ESP8266 device initialized.',
-      });
-      await loadDeviceData();
-    } catch (err) {
+    if (!deviceStatus.online) {
       onShowToast({
         id: `toast-${Date.now()}`,
         type: 'error',
-        title: 'Setup Failed',
-        description: 'Unable to initialize smart device.',
+        title: 'Device Unavailable',
+        description: deviceStatus.esp8266 === 'Device Status Unavailable'
+          ? 'Device Status Unavailable'
+          : deviceStatus.esp8266 === 'Checking...'
+            ? 'Checking device status...'
+            : 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.',
       });
-    } finally {
-      setIsLoading(false);
+      return;
     }
-  };
-
-  // Toggle single device (bulb or light)
-  const handleToggleDevice = async (bulbId: 'bulb' | 'light', targetState: boolean) => {
-    if (!user || !device || !deviceState) return;
 
     setIsOperating(true);
     const action = targetState ? 'on' : 'off';
     const targetName = bulbId === 'bulb' ? 'Bulb' : 'Light';
 
-    const result = await controlBulb(user.id, device.id, bulbId, action);
+    const result = await controlBulb(user.id, null, bulbId, action);
 
     if (result.success && result.newState) {
+      const newState = result.newState;
+      const updatedAt = new Date().toISOString();
       setDeviceState((current) => {
-        const nextState: DeviceState = current
-          ? {
-              ...current,
-              bulb_state: bulbId === 'bulb' ? result.newState!.bulb_state : current.bulb_state,
-              light_state: bulbId === 'light' ? result.newState!.light_state : current.light_state,
-              updated_at: new Date().toISOString(),
-            }
-          : {
-              id: `${device.id}-state`,
-              device_id: device.id,
-              bulb_state: bulbId === 'bulb' ? result.newState!.bulb_state : false,
-              light_state: bulbId === 'light' ? result.newState!.light_state : false,
-              updated_at: new Date().toISOString(),
-            };
-
-        return nextState;
+        return {
+          id: current?.id ?? 'esp8266',
+          device_id: current?.device_id ?? 'esp8266',
+          ...newState,
+          updated_at: updatedAt,
+        };
       });
       onShowToast({
         id: `toast-${Date.now()}`,
@@ -179,30 +119,35 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
 
   // Quick Action: Turn All On / Turn All Off
   const handleToggleAll = async (targetState: boolean) => {
-    if (!user || !device) return;
+    if (!user) return;
+    if (!deviceStatus.online) {
+      onShowToast({
+        id: `toast-${Date.now()}`,
+        type: 'error',
+        title: 'Device Unavailable',
+        description: deviceStatus.esp8266 === 'Device Status Unavailable'
+          ? 'Device Status Unavailable'
+          : deviceStatus.esp8266 === 'Checking...'
+            ? 'Checking device status...'
+            : 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.',
+      });
+      return;
+    }
 
     setIsOperating(true);
     const action = targetState ? 'on' : 'off';
-    const result = await controlBulb(user.id, device.id, 'all', action);
+    const result = await controlBulb(user.id, null, 'all', action);
 
     if (result.success && result.newState) {
+      const newState = result.newState;
+      const updatedAt = new Date().toISOString();
       setDeviceState((current) => {
-        const nextState: DeviceState = current
-          ? {
-              ...current,
-              bulb_state: result.newState!.bulb_state,
-              light_state: result.newState!.light_state,
-              updated_at: new Date().toISOString(),
-            }
-          : {
-              id: `${device.id}-state`,
-              device_id: device.id,
-              bulb_state: result.newState!.bulb_state,
-              light_state: result.newState!.light_state,
-              updated_at: new Date().toISOString(),
-            };
-
-        return nextState;
+        return {
+          id: current?.id ?? 'esp8266',
+          device_id: current?.device_id ?? 'esp8266',
+          ...newState,
+          updated_at: updatedAt,
+        };
       });
       onShowToast({
         id: `toast-${Date.now()}`,
@@ -223,55 +168,64 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
   };
 
   // Handle voice command execution from parser
-  const handleCommandParsed = async (command: VoiceCommand) => {
-    if (!user || !device) return;
+  const handleCommandParsed = async (command: VoiceCommand): Promise<string> => {
+    if (!user) return 'Smart home account is unavailable.';
 
     if (command.action === 'status') {
-      const statusMessage = `ESP8266 is ${deviceStatus.online ? 'Online' : 'Offline'}. Bulb is ${
-        deviceState?.bulb_state ? 'ON' : 'OFF'
-      } and Light is ${deviceState?.light_state ? 'ON' : 'OFF'}.`;
+      const statusMessage = deviceStatus.esp8266 === 'Device Status Unavailable'
+        ? 'Device Status Unavailable. Current bulb and light states could not be read.'
+        : !deviceState
+          ? `ESP8266 is ${deviceStatus.online ? 'Online' : 'Offline'}. Current bulb and light states could not be read.`
+          : `ESP8266 is ${deviceStatus.online ? 'Online' : 'Offline'}. Bulb is ${deviceState.bulb_state ? 'ON' : 'OFF'} and Light is ${deviceState.light_state ? 'ON' : 'OFF'}.`;
       onShowToast({
         id: `toast-${Date.now()}`,
         type: 'info',
         title: 'System Status',
         description: statusMessage,
       });
-      return;
+      return statusMessage;
+    }
+
+    if (!deviceStatus.online) {
+      const message = deviceStatus.esp8266 === 'Device Status Unavailable'
+        ? 'Device Status Unavailable'
+        : deviceStatus.esp8266 === 'Checking...'
+          ? 'Checking device status...'
+          : 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.';
+      onShowToast({ id: `toast-${Date.now()}`, type: 'error', title: 'Device Unavailable', description: message });
+      return message;
     }
 
     setIsOperating(true);
     const result = await controlBulb(
       user.id,
-      device.id,
+      null,
       command.device,
       command.action,
       command.originalText
     );
 
     if (result.success && result.newState) {
+      const newState = result.newState;
+      const updatedAt = new Date().toISOString();
       setDeviceState((current) => {
-        const nextState: DeviceState = current
-          ? {
-              ...current,
-              bulb_state: command.device === 'bulb' ? result.newState!.bulb_state : current.bulb_state,
-              light_state: command.device === 'light' ? result.newState!.light_state : current.light_state,
-              updated_at: new Date().toISOString(),
-            }
-          : {
-              id: `${device.id}-state`,
-              device_id: device.id,
-              bulb_state: command.device === 'bulb' ? result.newState!.bulb_state : false,
-              light_state: command.device === 'light' ? result.newState!.light_state : false,
-              updated_at: new Date().toISOString(),
-            };
-
-        return nextState;
+        return {
+          id: current?.id ?? 'esp8266',
+          device_id: current?.device_id ?? 'esp8266',
+          ...newState,
+          updated_at: updatedAt,
+        };
       });
       onShowToast({
         id: `toast-${Date.now()}`,
         type: 'success',
         title: `Voice Command Executed`,
         description: `Target: ${command.device.toUpperCase()} → ${command.action.toUpperCase()}`,
+      });
+      setIsOperating(false);
+      return getVoiceFeedbackText(command.device, command.action, {
+        bulb_state: result.newState.bulb_state,
+        light_state: result.newState.light_state,
       });
     } else {
       onShowToast({
@@ -280,31 +234,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
         title: 'Voice Command Failed',
         description: result.message || 'Unable to connect to smart home backend.',
       });
+      setIsOperating(false);
+      return result.message || 'Unable to complete the hardware command.';
     }
-
-    setIsOperating(false);
   };
-
-  if (noDeviceError) {
-    return (
-      <div className="max-w-xl mx-auto py-12 px-4 text-center">
-        <div className="p-8 glass-panel rounded-3xl border border-slate-800">
-          <AlertCircle className="w-12 h-12 text-amber-400 mx-auto mb-4 animate-bounce" />
-          <h2 className="text-xl font-bold text-slate-100">No smart device connected yet.</h2>
-          <p className="text-sm text-slate-400 mt-2 mb-6">
-            You don't have a 2-channel ESP8266 device assigned to your profile yet. Click below to provision your smart home hardware controller.
-          </p>
-          <button
-            onClick={handleProvisionDevice}
-            disabled={isLoading}
-            className="py-3 px-6 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 font-bold text-sm shadow-lg shadow-cyan-500/20 hover:brightness-110 active:scale-95 transition-all"
-          >
-            {isLoading ? 'Provisioning Device...' : 'Connect Smart Home Device'}
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-8 pb-24 md:pb-12">
@@ -333,7 +266,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
               <Cpu className="w-3.5 h-3.5 text-cyan-400" />
               <span className="text-slate-300">ESP8266:</span>
               <span className={deviceStatus.online ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
-                {deviceStatus.online ? '🟢 Device Online' : '🔴 Device Offline'}
+                {deviceStatus.esp8266 === 'Device Status Unavailable'
+                  ? 'Device Status Unavailable'
+                  : deviceStatus.esp8266 === 'Checking...'
+                    ? 'Checking...'
+                    : deviceStatus.online ? '🟢 Device Online' : '🔴 Device Offline'}
               </span>
             </div>
 
@@ -359,6 +296,18 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
         </div>
       </div>
 
+      {(!deviceStatus.online || !deviceState) && (
+        <p role="status" className={`text-xs ${deviceStatus.online ? 'text-amber-300' : 'text-rose-300'}`}>
+          {!deviceState && deviceStatus.online
+            ? 'Device state unavailable. Waiting for a live response from the hardware backend.'
+            : deviceStatus.esp8266 === 'Device Status Unavailable'
+              ? 'Device Status Unavailable'
+              : deviceStatus.esp8266 === 'Checking...'
+                ? 'Checking device status...'
+                : 'ESP8266 is offline. Please power on the device and connect it to Wi-Fi.'}
+        </p>
+      )}
+
       {/* Main Appliance Cards Section */}
       <div>
         <div className="flex items-center justify-between mb-4">
@@ -371,16 +320,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
           <div className="flex items-center space-x-2">
             <button
               onClick={() => handleToggleAll(true)}
-              disabled={isOperating || isLoading}
-              className="px-3.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-semibold text-xs flex items-center space-x-1.5 transition-all active:scale-95"
+              disabled={isOperating || isLoading || !deviceStatus.online}
+              className="px-3.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 font-semibold text-xs flex items-center space-x-1.5 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Power className="w-3.5 h-3.5 text-emerald-400" />
               <span>Turn All On</span>
             </button>
             <button
               onClick={() => handleToggleAll(false)}
-              disabled={isOperating || isLoading}
-              className="px-3.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 font-semibold text-xs flex items-center space-x-1.5 transition-all active:scale-95"
+              disabled={isOperating || isLoading || !deviceStatus.online}
+              className="px-3.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 font-semibold text-xs flex items-center space-x-1.5 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Power className="w-3.5 h-3.5 text-rose-400" />
               <span>Turn All Off</span>
@@ -394,9 +343,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
             bulbId="bulb"
             title="Bulb"
             subtitle="Relay 1 • GPIO5 • ESP8266"
-            isOn={Boolean(deviceState?.bulb_state)}
+            isOn={deviceState?.bulb_state}
             onToggle={handleToggleDevice}
             isLoading={isOperating}
+            controlsEnabled={deviceStatus.online}
             accentColor="amber"
           />
 
@@ -404,9 +354,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
             bulbId="light"
             title="Light"
             subtitle="Relay 2 • GPIO4 • ESP8266"
-            isOn={Boolean(deviceState?.light_state)}
+            isOn={deviceState?.light_state}
             onToggle={handleToggleDevice}
             isLoading={isOperating}
+            controlsEnabled={deviceStatus.online}
             accentColor="cyan"
           />
         </div>
@@ -421,6 +372,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onShowToast }) => 
             : undefined
         }
         isExecuting={isOperating}
+        deviceStatus={deviceStatus.esp8266}
       />
     </div>
   );

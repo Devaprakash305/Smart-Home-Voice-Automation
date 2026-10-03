@@ -9,12 +9,10 @@ export const StatusPage: React.FC = () => {
     online: false,
     lastSeen: null,
     device: 'ESP8266',
-    esp8266: 'Offline',
+    esp8266: 'Checking...',
     cloudflare: 'Checking...',
     supabase: 'Connected',
     voice: 'Ready',
-    bulbState: false,
-    lightState: false,
   });
   const [loading, setLoading] = useState<boolean>(false);
 
@@ -27,7 +25,7 @@ export const StatusPage: React.FC = () => {
 
   useEffect(() => {
     refreshTelemetry();
-    const interval = window.setInterval(refreshTelemetry, 4000);
+    const interval = window.setInterval(refreshTelemetry, 5000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -78,7 +76,7 @@ export const StatusPage: React.FC = () => {
           <div>
             <span className="text-slate-400">Status Example:</span>
             <pre className="text-cyan-300 mt-1 bg-slate-950 p-2 rounded-lg text-[11px] overflow-x-auto">
-{JSON.stringify({ online: true, lastSeen: '2026-10-03T10:30:00.000Z', device: 'ESP8266' }, null, 2)}
+{JSON.stringify({ online: status.online, last_seen: status.lastSeen, device: status.device }, null, 2)}
             </pre>
           </div>
         </div>
